@@ -1,5 +1,37 @@
+
+# ✅ Internet Gateway + Route Table 연결 추가
+resource "aws_internet_gateway" "my_igw" {
+  vpc_id = local.vpc_id
+  tags = {
+    Name = "gj-lab-igw"
+  }
+}
+
+resource "aws_route_table" "my_rt" {
+  vpc_id = local.vpc_id
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.my_igw.id
+  }
+  tags = {
+    Name = "gj-lab-public-rt"
+  }
+}
+
+resource "aws_route_table_association" "public_2a_assoc" {
+  subnet_id      = aws_subnet.public_2a.id
+  route_table_id = aws_route_table.my_rt.id
+}
+
+resource "aws_route_table_association" "public_2c_assoc" {
+  subnet_id      = aws_subnet.public_2c.id
+  route_table_id = aws_route_table.my_rt.id
+}
+
+
+
 #########################################
-# gj-lab ASG (1대 동결 + 고정 AMI)
+# gj-lab ASG (1대 동결 + 고정 AMI) - 형님 계정용 완성본
 #########################################
 
 terraform {
@@ -15,31 +47,55 @@ provider "aws" {
   region = "ap-northeast-2"
 }
 
-# ===== 변수 =====
-variable "vpc_id" {
-  type    = string
-  default = "vpc-009884452bcbdb7b7"
+#########################################
+# 1️⃣ 내 계정용 VPC + Subnet 자동 생성
+#########################################
+
+resource "aws_vpc" "my_vpc" {
+  cidr_block           = "10.0.0.0/16"
+  enable_dns_support   = true
+  enable_dns_hostnames = true
+  tags = {
+    Name    = "gj-lab-vpc"
+    Project = "gj-lab"
+  }
 }
 
-variable "public_subnet_ids" {
-  type = list(string)
-  default = [
-    "subnet-02f862538546caf3e",
-    "subnet-043862d181e3189a3"
+resource "aws_subnet" "public_2a" {
+  vpc_id                  = aws_vpc.my_vpc.id
+  cidr_block              = "10.0.1.0/24"
+  availability_zone       = "ap-northeast-2a"
+  map_public_ip_on_launch = true
+  tags = { Name = "gj-lab-public-2a" }
+}
+
+resource "aws_subnet" "public_2c" {
+  vpc_id                  = aws_vpc.my_vpc.id
+  cidr_block              = "10.0.2.0/24"
+  availability_zone       = "ap-northeast-2c"
+  map_public_ip_on_launch = true
+  tags = { Name = "gj-lab-public-2c" }
+}
+
+#########################################
+# 2️⃣ 로컬 변수로 참조
+#########################################
+locals {
+  vpc_id            = aws_vpc.my_vpc.id
+  public_subnet_ids = [
+    aws_subnet.public_2a.id,
+    aws_subnet.public_2c.id
   ]
 }
 
-variable "ami_id" {
-  description = "이미 만들어둔 AMI ID"
-  type        = string
-  default     = "ami-0a71e3eb8b23101ed" # ✅ Ubuntu 24.04 (공식)
-}
+#########################################
+# 3️⃣ Security Groups
+#########################################
 
-# ===== Security Groups =====
 resource "aws_security_group" "alb_sg" {
   name        = "gj-lab-alb-sg"
   description = "ALB 80/443"
-  vpc_id      = var.vpc_id
+  vpc_id      = local.vpc_id
 
   ingress {
     from_port   = 80
@@ -68,7 +124,7 @@ resource "aws_security_group" "alb_sg" {
 resource "aws_security_group" "app_sg" {
   name        = "gj-lab-app-sg"
   description = "App 8080 + SSH"
-  vpc_id      = var.vpc_id
+  vpc_id      = local.vpc_id
 
   ingress {
     from_port   = 8080
@@ -94,7 +150,10 @@ resource "aws_security_group" "app_sg" {
   tags = { Name = "gj-lab-app-sg" }
 }
 
-# ===== IAM (EC2 → SSM 접근) =====
+#########################################
+# 4️⃣ IAM Role for EC2 (SSM 접근)
+#########################################
+
 data "aws_iam_policy_document" "ec2_assume" {
   statement {
     actions = ["sts:AssumeRole"]
@@ -120,12 +179,15 @@ resource "aws_iam_instance_profile" "app_profile" {
   role = aws_iam_role.app_role.name
 }
 
-# ===== Launch Template =====
+#########################################
+# 5️⃣ Launch Template (EC2)
+#########################################
+
 resource "aws_launch_template" "lt" {
   name_prefix   = "gj-lab-lt-"
-  image_id      = var.ami_id
+  image_id      = "ami-0a71e3eb8b23101ed" # ✅ 친구의 퍼블릭 AMI
   instance_type = "t3.micro"
-  key_name      = "gj-kor-aiot" # ✅ SSH 키
+  key_name      = "gj-kor-aiot" # 형님 SSH 키 이름
 
   iam_instance_profile {
     name = aws_iam_instance_profile.app_profile.name
@@ -146,12 +208,15 @@ resource "aws_launch_template" "lt" {
   }
 }
 
-# ===== Target Group + ALB + Listener =====
+#########################################
+# 6️⃣ Target Group + ALB + Listener
+#########################################
+
 resource "aws_lb_target_group" "tg" {
   name        = "gj-lab-tg"
   port        = 8080
   protocol    = "HTTP"
-  vpc_id      = var.vpc_id
+  vpc_id      = local.vpc_id
   target_type = "instance"
 
   health_check {
@@ -169,7 +234,7 @@ resource "aws_lb" "alb" {
   load_balancer_type = "application"
   internal           = false
   security_groups    = [aws_security_group.alb_sg.id]
-  subnets            = var.public_subnet_ids
+  subnets            = local.public_subnet_ids
 }
 
 resource "aws_lb_listener" "http" {
@@ -183,22 +248,25 @@ resource "aws_lb_listener" "http" {
   }
 }
 
-# ===== Auto Scaling Group (1대 유지 + 교체 없음) =====
+#########################################
+# 7️⃣ Auto Scaling Group (EC2 한 대 유지)
+#########################################
+
 resource "aws_autoscaling_group" "asg" {
   name                = "gj-lab-asg"
   desired_capacity    = 1
   min_size            = 1
   max_size            = 1
   health_check_type   = "EC2"
-  vpc_zone_identifier = var.public_subnet_ids
+  vpc_zone_identifier = local.public_subnet_ids
   target_group_arns   = [aws_lb_target_group.tg.arn]
 
   launch_template {
     id      = aws_launch_template.lt.id
-    version = "$Default" # ✅ 항상 기본 버전
+    version = "$Default"
   }
 
-  protect_from_scale_in = true # ✅ 삭제 방지
+  protect_from_scale_in = true
 
   lifecycle {
     ignore_changes = [
@@ -213,7 +281,7 @@ resource "aws_autoscaling_group" "asg" {
       min_healthy_percentage = 100
       instance_warmup        = 300
     }
-    triggers = [] # ✅ 변경에도 교체 없음
+    triggers = []
   }
 
   tag {
@@ -223,7 +291,9 @@ resource "aws_autoscaling_group" "asg" {
   }
 }
 
-# ===== 출력 =====
+#########################################
+# 8️⃣ 출력 (ALB 주소)
+#########################################
 output "alb_dns" {
   value = aws_lb.alb.dns_name
 }
