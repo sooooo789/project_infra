@@ -1,0 +1,20 @@
+# Terraform state & cache
+*.tfstate
+*.tfstate.backup
+*.tfstate.lock.info
+terraform.tfstate*
+tfplan
+crash.log
+.terraform/
+
+# Credentials / keys
+*.pem
+*.key
+*.env
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
